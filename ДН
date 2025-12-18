@@ -1,0 +1,128 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import quad
+
+class DipoleAntenna:
+    def __init__(self, frequency_ghz=10.0, length_ratio=1.4):
+        self.frequency = frequency_ghz
+        self.length_ratio = length_ratio  # 2l/lambda
+        self.c = 3e8
+        self.wavelength = self.c / (frequency_ghz * 1e9)
+        self.k = 2 * np.pi / self.wavelength
+        self.l = (self.length_ratio * self.wavelength) / 2
+
+    def radiation_pattern_sq(self, theta):
+        if theta % np.pi == 0: return 0.0
+        kl = self.k * self.l
+        F = (np.cos(kl * np.cos(theta)) - np.cos(kl)) / np.sin(theta)
+        return F ** 2
+
+    def calculate_Dmax(self):
+        def integrand(t):
+            return self.radiation_pattern_sq(t) * np.sin(t)
+
+        integral, _ = quad(integrand, 0, np.pi)
+
+        thetas = np.linspace(0, np.pi, 1000)
+        f_sq_vals = [self.radiation_pattern_sq(t) for t in thetas]
+        f_max_sq = max(f_sq_vals)
+        return (2 * f_max_sq) / integral
+
+    def get_directivity_array(self, theta_rad_array):
+        d_max = self.calculate_Dmax()
+        f_sq = np.array([self.radiation_pattern_sq(t) for t in theta_rad_array])
+        return (f_sq / np.max(f_sq)) * d_max
+
+
+def read_cst(filename, to_linear=False):
+    theta, val = [], []
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            for line in f:
+                p = line.split()
+                if len(p) < 3 or line.strip().startswith(('Theta', '-', '#')): continue
+                try:
+                    t, phi, v = float(p[0]), float(p[1]), float(p[2])
+                    if t > 180.001: continue
+                    theta.append(t)
+                    val.append(v)
+                except:
+                    continue
+        v_arr = np.array(val)
+        if to_linear: v_arr = 10 ** (v_arr / 10.0)
+        return np.array(theta), v_arr
+    except:
+        return None
+
+def main():
+    ant = DipoleAntenna(10.0, 1.4)
+    d_max = ant.calculate_Dmax()
+    print(f"Вариант 10: Dmax = {d_max:.4f} ({10 * np.log10(d_max):.2f} dBi)")
+
+    th_deg = np.linspace(0, 180, 500)
+    th_rad = np.radians(th_deg)
+    d_lin_an = ant.get_directivity_array(th_rad)
+    d_db_an = 10 * np.log10(np.maximum(d_lin_an, 1e-6))
+
+    cst_lin_cart = read_cst('линейныйвразах.txt', to_linear=True)
+    cst_pol_lin = read_cst('полярныйвразах.txt', to_linear=True)
+    cst_db_cart = read_cst('децебеллылинейный.txt', to_linear=False)
+    cst_db_pol = read_cst('децебеллыполярный.txt', to_linear=False)
+
+    fig = plt.figure(figsize=(15, 12))
+
+    # 1 Линейный Декартов
+    ax1 = plt.subplot(2, 2, 1)
+    ax1.plot(th_deg, d_lin_an, 'b', label='Аналитика', lw=2.5)
+    if cst_lin_cart:
+        # Подгонка пика CST под пик аналитики
+        cst_lin_aligned = (cst_lin_cart[1] / np.max(cst_lin_cart[1])) * d_max
+        ax1.plot(cst_lin_cart[0], cst_lin_aligned, 'r--', label='CST', lw=1.5)
+    ax1.set_title('Линейный масштаб (Декартова)');
+    ax1.grid(True);
+    ax1.legend();
+    ax1.set_xlim(0, 180)
+
+    # 2 дБ Декартов
+    ax2 = plt.subplot(2, 2, 2)
+    ax2.plot(th_deg, d_db_an, 'b', label='Аналитика', lw=2.5)
+    if cst_db_cart:
+        cst_db_aligned = cst_db_cart[1] + (np.max(d_db_an) - np.max(cst_db_cart[1]))
+        ax2.plot(cst_db_cart[0], cst_db_aligned, 'r--', label='CST', lw=1.5)
+    ax2.set_title('ДН в дБ (Декартова)');
+    ax2.grid(True);
+    ax2.legend();
+    ax2.set_xlim(0, 180)
+
+    # 3 Линейный Полярный
+    ax3 = plt.subplot(2, 2, 3, projection='polar')
+    ax3.plot(th_rad, d_lin_an, 'b', lw=2.5, label='Аналитика')
+    if cst_pol_lin:
+        cst_lin_aligned = (cst_pol_lin[1] / np.max(cst_pol_lin[1])) * d_max
+        ax3.plot(np.radians(cst_pol_lin[0]), cst_lin_aligned, 'r--', label='CST', lw=1.5)
+    ax3.set_theta_zero_location('N')
+    ax3.set_theta_direction(-1)
+    ax3.set_title('Линейный масштаб (Полярная)', pad=35)  
+    ax3.legend(loc='lower right', bbox_to_anchor=(1.25, 0))
+
+    # 4 дБ Полярный
+    ax4 = plt.subplot(2, 2, 4, projection='polar')
+    an_norm = d_db_an - np.max(d_db_an)
+    ax4.plot(th_rad, an_norm, 'b', lw=2.5, label='Аналитика')
+    if cst_db_pol:
+        cst_norm = cst_db_pol[1] - np.max(cst_db_pol[1])
+        ax4.plot(np.radians(cst_db_pol[0]), cst_norm, 'r--', label='CST', lw=1.5)
+    ax4.set_ylim(-40, 0)
+    ax4.set_theta_zero_location('N')
+    ax4.set_theta_direction(-1)
+    ax4.set_title('ДН в дБ (Полярная)', pad=35)  
+    ax4.legend(loc='lower right', bbox_to_anchor=(1.25, 0))
+
+    plt.tight_layout()
+    plt.subplots_adjust(hspace=0.4, wspace=0.3)  
+
+    plt.show()
+
+
+if __name__ == '__main__':
+    main()
